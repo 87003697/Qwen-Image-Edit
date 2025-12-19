@@ -67,8 +67,11 @@ def render_normal(mesh, cam, device, H, W, bg_color):
     normal, _ = dr.interpolate(mesh.vn.unsqueeze(0).contiguous(), rast, mesh.fn)  # shape: [1, H, W, 3]
     normal = safe_normalize(normal)  # shape: [1, H, W, 3]
 
-    R_wc = torch.inverse(pose)[:3, :3]  # shape: [3, 3]
-    normal_view = torch.einsum("bhwc,cd->bhwd", normal, R_wc)  # shape: [1, H, W, 3]
+    # World space to View space normal transformation
+    # We need to multiply by R_w2c^T (transpose of World-to-Camera rotation).
+    # Since pose is C2W, pose[:3, :3] is exactly R_c2w, which equals R_w2c^T.
+    R_c2w = pose[:3, :3]  # shape: [3, 3]
+    normal_view = torch.einsum("bhwc,cd->bhwd", normal, R_c2w)  # shape: [1, H, W, 3]
     normal_view = safe_normalize(normal_view)  # shape: [1, H, W, 3]
 
     # OpenCV/OpenGL 坐标差异：翻转 X 轴与参考实现保持一致
@@ -110,8 +113,11 @@ def render_pbr(mesh, light, FG_LUT, cam, device, H, W, bg_color):
 
     normal, _ = dr.interpolate(mesh.vn.unsqueeze(0).contiguous(), rast, mesh.fn)  # shape: [1, H, W, 3]
     normal = safe_normalize(normal)  # shape: [1, H, W, 3]
-    R_wc = torch.inverse(pose)[:3, :3]  # shape: [3, 3]
-    normal_view = torch.einsum("bhwc,cd->bhwd", normal, R_wc)  # shape: [1, H, W, 3]
+    # World space to View space normal transformation
+    # We need to multiply by R_w2c^T (transpose of World-to-Camera rotation).
+    # Since pose is C2W, pose[:3, :3] is exactly R_c2w, which equals R_w2c^T.
+    R_c2w = pose[:3, :3]  # shape: [3, 3]
+    normal_view = torch.einsum("bhwc,cd->bhwd", normal, R_c2w)  # shape: [1, H, W, 3]
     normal_view = safe_normalize(normal_view)  # shape: [1, H, W, 3]
     normal_img = (normal_view * 0.5 + 0.5).clamp(0, 1)  # shape: [1, H, W, 3]
     normal_img = torch.where(alpha > 0, normal_img, torch.tensor(1.0, device=normal_img.device))  # shape: [1, H, W, 3]
