@@ -9,13 +9,13 @@ SCRIPT_DIR="$(cd -- "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # 配置参数
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-7}"
 export DEVICE="${DEVICE:-cuda}"
 export HOST="${HOST:-0.0.0.0}"
 export PORT="${PORT:-8000}"
 
 LOG_DIR="$PROJECT_ROOT/logs"
-LOG_FILE="$LOG_DIR/flowedit_service.log"
+LOG_FILE="$LOG_DIR/flowedit_service_gpu${CUDA_VISIBLE_DEVICES}.log"
 
 mkdir -p "$LOG_DIR"
 
