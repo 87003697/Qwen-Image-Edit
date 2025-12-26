@@ -329,8 +329,8 @@ profiler_logs/
 # Model checkpoints and training artifacts
 checkpoints/
 
-# # Reference code and external repositories
-# _reference_codes/
+# Reference code and external repositories
+_reference_codes/
 
 # Allow committing specific evaluation datasets
 # Dataset rules: ignore all datasets by default
