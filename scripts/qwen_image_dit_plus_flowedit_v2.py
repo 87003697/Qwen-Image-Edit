@@ -153,7 +153,7 @@ def run_edit(
         output = pipe(**inputs)
         output_image = output.images[0]
 
-    # output_image.save(output_path)
+    output_image.save(output_path)
     vis_path = _make_triptych_with_prompt(
         source_image, 
         target_image,

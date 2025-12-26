@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=5
 # 获取脚本所在目录 (scripts/)
 SCRIPT_DIR="$(cd -- "$(dirname "$0")" && pwd)"
 # 获取项目根目录 (scripts/ 的上一级)
@@ -19,7 +19,7 @@ N_MAX="25"
 
 # --- 构建输出文件名 ---
 OUT_NAME="output_Tgt-${CFG_TGT}_Max-${N_MAX}.png"
-OUTPUT_PATH="outputs_v2-3/${OUT_NAME}"
+OUTPUT_PATH="outputs_v2-4/${OUT_NAME}"
 
 # 设置 PYTHONPATH 包含项目根目录，以便能找到 pipelines 模块
 PYTHONPATH="$PROJECT_ROOT" python "$SCRIPT_DIR/qwen_image_dit_plus_flowedit_v2.py" \

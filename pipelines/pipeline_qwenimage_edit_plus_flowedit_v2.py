@@ -812,7 +812,6 @@ class QwenImageEditPlusPipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
 
         # 6. Simplified FlowEdit Loop (Using Analytical Solution for Source Branch)
 
-        
         self.scheduler.set_begin_index(0)
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
@@ -833,7 +832,7 @@ class QwenImageEditPlusPipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                 # 1. Source Branch (Analytical Solution - No Model Inference)
                 # Generate random noise for this step
                 noise = torch.randn_like(x_src)  # shape: [B, seq_len, C]
-                
+
                 # Construct source latent state
                 latents_src = (1 - t_curr) * x_src + t_curr * noise  # shape: [B, seq_len, C]
                 
