@@ -4,10 +4,11 @@
 """
 
 import os
-from typing import Optional
+from typing import Optional, Tuple
 from contextlib import asynccontextmanager
 
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -123,11 +124,22 @@ async def edit_image(request: EditRequest):
         source_image = decode_base64_image(request.source_image)
         target_image = decode_base64_image(request.target_image)
         
-        # 2. 预处理（等比缩放）
-        source_image = resize_if_needed(source_image)
+        # 2. 预处理
+        # - source_image: 保持原尺寸，由客户端控制渲染分辨率
+        # - target_image: resize 到 1024×1024（条件图像可能尺寸不一）
         target_image = resize_if_needed(target_image)
         
-        # 3. 构建推理参数
+        # 3. 验证尺寸一致性
+        # source_image 尺寸必须与 resize 后的 target_image 一致
+        # 这样梯度尺寸才能与客户端的渲染图匹配
+        if source_image.size != target_image.size:
+            raise HTTPException(
+                status_code=400,
+                detail=f"尺寸不匹配: source_image {source_image.size} != target_image {target_image.size}。"
+                       f"请确保渲染分辨率与 FlowEdit 要求一致 (通常为 1024×1024)。"
+            )
+        
+        # 4. 构建推理参数
         inputs = {
             "image_src": source_image,
             "image_tgt": target_image,
@@ -143,13 +155,13 @@ async def edit_image(request: EditRequest):
             "n_max": request.n_max,
         }
         
-        # 4. 执行推理
+        # 5. 执行推理
         with torch.inference_mode():
             output = pipe(**inputs)
             output_image = output.images[0]
             edited_latent = output.latents  # [B, seq_len, C] packed latent
         
-        # 5. 计算梯度（独立控制）
+        # 6. 计算梯度（独立控制）
         ssim_val, lpips_val, latent_mse_val = None, None, None
         ssim_grad_b64, lpips_grad_b64, latent_mse_grad_b64 = None, None, None
         device_model = str(next(pipe.transformer.parameters()).device)
@@ -193,7 +205,7 @@ async def edit_image(request: EditRequest):
             latent_mse_val = latent_mse_result["mse"]
             latent_mse_grad_b64 = encode_tensor_to_base64(latent_mse_result["mse_grad"])
         
-        # 6. 编码输出
+        # 7. 编码输出
         output_b64 = encode_image_to_base64(output_image)
         
         return EditResponse(

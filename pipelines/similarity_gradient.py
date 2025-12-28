@@ -28,20 +28,23 @@ def compute_ssim_gradient(
     device: str = "cuda",
 ) -> dict:
     """
-    计算 SSIM 值及其相对于 output 的梯度
+    计算 SSIM 值及其相对于 source 的梯度。
+    
+    目标：让 source（渲染图）看起来更像 output（FlowEdit 编辑后的图）。
+    因此需要计算 ∂Loss/∂source，这样梯度可以反传到 3D 模型。
     
     Returns:
         ssim: float 值 (0~1, 越高越相似)
-        ssim_grad: [3, H, W] 梯度张量
+        ssim_grad: [3, H, W] 梯度张量（相对于 source）
     """
     with torch.enable_grad():
-        src = pil_to_tensor(source_img, device)  # [1, 3, H, W]
-        out = pil_to_tensor(output_img, device).requires_grad_(True)  # [1, 3, H, W]
+        src = pil_to_tensor(source_img, device).requires_grad_(True)  # [1, 3, H, W] - 需要梯度
+        out = pil_to_tensor(output_img, device)  # [1, 3, H, W] - 目标图，不需要梯度
         
         ssim_val = ssim(src, out, data_range=1.0, size_average=True)  # scalar
-        ssim_loss = 1.0 - ssim_val  # scalar
+        ssim_loss = 1.0 - ssim_val  # scalar，最小化 loss = 最大化 SSIM
         
-        ssim_grad = torch.autograd.grad(ssim_loss, out)[0].squeeze(0)  # [3, H, W]
+        ssim_grad = torch.autograd.grad(ssim_loss, src)[0].squeeze(0)  # [3, H, W] - ∂Loss/∂source
     
     return {
         "ssim": ssim_val.item(),
@@ -56,20 +59,23 @@ def compute_lpips_gradient(
     device: str = "cuda",
 ) -> dict:
     """
-    计算 LPIPS 值及其相对于 output 的梯度
+    计算 LPIPS 值及其相对于 source 的梯度。
+    
+    目标：让 source（渲染图）看起来更像 output（FlowEdit 编辑后的图）。
+    因此需要计算 ∂Loss/∂source，这样梯度可以反传到 3D 模型。
     
     Returns:
         lpips: float 值 (越低越相似)
-        lpips_grad: [3, H, W] 梯度张量
+        lpips_grad: [3, H, W] 梯度张量（相对于 source）
     """
     with torch.enable_grad():
-        src = pil_to_tensor(source_img, device)  # [1, 3, H, W]
-        out = pil_to_tensor(output_img, device).requires_grad_(True)  # [1, 3, H, W]
+        src = pil_to_tensor(source_img, device).requires_grad_(True)  # [1, 3, H, W] - 需要梯度
+        out = pil_to_tensor(output_img, device)  # [1, 3, H, W] - 目标图，不需要梯度
         
         # LPIPS 期望 [-1, 1] 输入
         lpips_val = lpips_model(src * 2 - 1, out * 2 - 1).squeeze()  # scalar
         
-        lpips_grad = torch.autograd.grad(lpips_val, out)[0].squeeze(0)  # [3, H, W]
+        lpips_grad = torch.autograd.grad(lpips_val, src)[0].squeeze(0)  # [3, H, W] - ∂Loss/∂source
     
     return {
         "lpips": lpips_val.item(),
