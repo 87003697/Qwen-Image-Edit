@@ -14,10 +14,12 @@
 
 import inspect
 import math
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import numpy as np
 import torch
+from diffusers.utils import BaseOutput
 from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer, Qwen2VLProcessor
 
 from diffusers.image_processor import PipelineImageInput, VaeImageProcessor
@@ -39,6 +41,20 @@ else:
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+
+@dataclass
+class FlowEditPipelineOutput(BaseOutput):
+    """
+    Output class for FlowEdit pipeline.
+    
+    Args:
+        images: Generated images (PIL or tensor)
+        latents: Edited latents in packed format [B, seq_len, C]
+    """
+    images: Any
+    latents: Optional[torch.Tensor] = None
+
 
 EXAMPLE_DOC_STRING = """
     Examples:
@@ -903,6 +919,10 @@ class QwenImageEditPlusPipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
 
         latents = z_edit
         self._current_timestep = None
+        
+        # 保存 packed latent 用于返回
+        packed_latents = latents.clone()  # shape: [B, seq_len, C]
+        
         if output_type == "latent":
             image = latents
         else:
@@ -924,6 +944,6 @@ class QwenImageEditPlusPipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
         self.maybe_free_model_hooks()
 
         if not return_dict:
-            return (image,)
+            return (image, packed_latents)
 
-        return QwenImagePipelineOutput(images=image)
+        return FlowEditPipelineOutput(images=image, latents=packed_latents)

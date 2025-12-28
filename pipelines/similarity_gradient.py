@@ -1,6 +1,8 @@
 """
-SSIM/LPIPS 相似度计算及梯度模块
+SSIM/LPIPS/Latent MSE 相似度计算及梯度模块
 """
+
+from typing import Callable
 
 import torch
 import numpy as np
@@ -32,13 +34,14 @@ def compute_ssim_gradient(
         ssim: float 值 (0~1, 越高越相似)
         ssim_grad: [3, H, W] 梯度张量
     """
-    src = pil_to_tensor(source_img, device)  # [1, 3, H, W]
-    out = pil_to_tensor(output_img, device).requires_grad_(True)  # [1, 3, H, W]
-    
-    ssim_val = ssim(src, out, data_range=1.0, size_average=True)  # scalar
-    ssim_loss = 1.0 - ssim_val  # scalar
-    
-    ssim_grad = torch.autograd.grad(ssim_loss, out)[0].squeeze(0)  # [3, H, W]
+    with torch.enable_grad():
+        src = pil_to_tensor(source_img, device)  # [1, 3, H, W]
+        out = pil_to_tensor(output_img, device).requires_grad_(True)  # [1, 3, H, W]
+        
+        ssim_val = ssim(src, out, data_range=1.0, size_average=True)  # scalar
+        ssim_loss = 1.0 - ssim_val  # scalar
+        
+        ssim_grad = torch.autograd.grad(ssim_loss, out)[0].squeeze(0)  # [3, H, W]
     
     return {
         "ssim": ssim_val.item(),
@@ -59,15 +62,62 @@ def compute_lpips_gradient(
         lpips: float 值 (越低越相似)
         lpips_grad: [3, H, W] 梯度张量
     """
-    src = pil_to_tensor(source_img, device)  # [1, 3, H, W]
-    out = pil_to_tensor(output_img, device).requires_grad_(True)  # [1, 3, H, W]
-    
-    # LPIPS 期望 [-1, 1] 输入
-    lpips_val = lpips_model(src * 2 - 1, out * 2 - 1).squeeze()  # scalar
-    
-    lpips_grad = torch.autograd.grad(lpips_val, out)[0].squeeze(0)  # [3, H, W]
+    with torch.enable_grad():
+        src = pil_to_tensor(source_img, device)  # [1, 3, H, W]
+        out = pil_to_tensor(output_img, device).requires_grad_(True)  # [1, 3, H, W]
+        
+        # LPIPS 期望 [-1, 1] 输入
+        lpips_val = lpips_model(src * 2 - 1, out * 2 - 1).squeeze()  # scalar
+        
+        lpips_grad = torch.autograd.grad(lpips_val, out)[0].squeeze(0)  # [3, H, W]
     
     return {
         "lpips": lpips_val.item(),
         "lpips_grad": lpips_grad,
     }
+
+
+def compute_latent_mse_gradient(
+    source_img: Image.Image,
+    edited_latent: torch.Tensor,
+    preprocess_fn: Callable[[Image.Image], torch.Tensor],
+    encode_fn: Callable[[torch.Tensor], torch.Tensor],
+    unpack_fn: Callable[[torch.Tensor, int, int], torch.Tensor],
+    device: str = "cuda",
+) -> dict:
+    """
+    计算 source_latent 和 edited_latent 之间 MSE 相对于 source_img 的梯度
+    
+    Args:
+        source_img: 源图像 (PIL)
+        edited_latent: 编辑后的 packed latent [B, seq_len, C]
+        preprocess_fn: 图像预处理函数，接收 PIL Image 返回 [B, 3, H, W] tensor（范围 [-1, 1]）
+        encode_fn: VAE 编码函数，接收 [B, C, 1, H, W] 返回标准化后的 latent
+        unpack_fn: Unpack 函数，接收 (latent, height, width) 返回 [B, C, 1, h, w]
+        device: 设备
+    
+    Returns:
+        mse: float 值
+        mse_grad: [3, H, W] 梯度张量
+    """
+    # 确保梯度计算启用
+    with torch.enable_grad():
+        # 1. 使用 pipeline 的 preprocess 函数处理源图像，转为 float32 保证梯度精度
+        src = preprocess_fn(source_img).to(device).float()  # [1, 3, H, W], 范围 [-1, 1]
+        _, _, height, width = src.shape
+        src = src.unsqueeze(2).requires_grad_(True)  # [1, 3, 1, H, W]
+        
+        # 2. 使用传入的 encode_fn 进行 VAE 编码 + 标准化
+        src_latent = encode_fn(src)  # [1, C, 1, h, w]
+        
+        # 3. 使用传入的 unpack_fn 将 edited_latent 转换为相同格式，detach 防止梯度流动
+        edited_unpacked = unpack_fn(edited_latent.detach(), height, width)  # [1, C, 1, h, w]
+        edited_unpacked = edited_unpacked.to(src_latent.dtype).to(device)  # [1, C, 1, h, w]
+        
+        # 4. 计算 MSE
+        mse_loss = torch.nn.functional.mse_loss(src_latent, edited_unpacked)
+        
+        # 5. 求梯度（相对于 source 图像）
+        mse_grad = torch.autograd.grad(mse_loss, src)[0].squeeze(0).squeeze(1)  # [3, H, W]
+    
+    return {"mse": mse_loss.item(), "mse_grad": mse_grad}

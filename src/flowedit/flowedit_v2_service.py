@@ -8,6 +8,7 @@ from typing import Optional
 from contextlib import asynccontextmanager
 
 import torch
+from PIL import Image
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
@@ -15,6 +16,7 @@ from pipelines.pipeline_qwenimage_edit_plus_flowedit_v2 import QwenImageEditPlus
 from pipelines.similarity_gradient import (
     compute_ssim_gradient,
     compute_lpips_gradient,
+    compute_latent_mse_gradient,
     create_lpips_model,
 )
 from src.flowedit.utils import (
@@ -85,6 +87,7 @@ class EditRequest(BaseModel):
     # 梯度计算（独立控制）
     compute_ssim_grad: bool = Field(default=False, description="是否计算 SSIM 梯度")
     compute_lpips_grad: bool = Field(default=False, description="是否计算 LPIPS 梯度")
+    compute_latent_mse_grad: bool = Field(default=False, description="是否计算 Latent MSE 梯度")
 
 
 class EditResponse(BaseModel):
@@ -94,8 +97,10 @@ class EditResponse(BaseModel):
     # 梯度相关字段
     ssim: Optional[float] = Field(default=None, description="SSIM 值")
     lpips: Optional[float] = Field(default=None, description="LPIPS 值")
+    latent_mse: Optional[float] = Field(default=None, description="Latent MSE 值")
     ssim_grad: Optional[str] = Field(default=None, description="Base64 编码的 SSIM 梯度")
     lpips_grad: Optional[str] = Field(default=None, description="Base64 编码的 LPIPS 梯度")
+    latent_mse_grad: Optional[str] = Field(default=None, description="Base64 编码的 Latent MSE 梯度")
 
 
 # ============ API 端点 ============
@@ -136,9 +141,11 @@ async def edit_image(request: EditRequest):
         with torch.inference_mode():
             output = pipe(**inputs)
             output_image = output.images[0]
+            edited_latent = output.latents  # [B, seq_len, C] packed latent
         
         # 5. 计算梯度（独立控制）
-        ssim_val, lpips_val, ssim_grad_b64, lpips_grad_b64 = None, None, None, None
+        ssim_val, lpips_val, latent_mse_val = None, None, None
+        ssim_grad_b64, lpips_grad_b64, latent_mse_grad_b64 = None, None, None
         device = str(next(pipe.transformer.parameters()).device)
         
         if request.compute_ssim_grad:
@@ -151,6 +158,27 @@ async def edit_image(request: EditRequest):
             lpips_val = lpips_result["lpips"]
             lpips_grad_b64 = encode_tensor_to_base64(lpips_result["lpips_grad"])
         
+        if request.compute_latent_mse_grad:
+            # 封装 pipeline 的 preprocess、encode 和 unpack 函数
+            def preprocess_fn(img: Image.Image) -> torch.Tensor:
+                """使用 pipeline 的图像预处理"""
+                w, h = img.size
+                return pipe.image_processor.preprocess(img, h, w)  # [1, 3, H, W], 范围 [-1, 1]
+            
+            def encode_fn(img_tensor: torch.Tensor) -> torch.Tensor:
+                """使用 pipeline 的 VAE 编码 + 标准化"""
+                return pipe._encode_vae_image(img_tensor, generator=None)  # [B, C, 1, h, w]
+            
+            def unpack_fn(latent: torch.Tensor, height: int, width: int) -> torch.Tensor:
+                """使用 pipeline 的 unpack 函数"""
+                return pipe._unpack_latents(latent, height, width, pipe.vae_scale_factor)  # [B, C, 1, h, w]
+            
+            latent_mse_result = compute_latent_mse_gradient(
+                source_image, edited_latent, preprocess_fn, encode_fn, unpack_fn, device
+            )
+            latent_mse_val = latent_mse_result["mse"]
+            latent_mse_grad_b64 = encode_tensor_to_base64(latent_mse_result["mse_grad"])
+        
         # 6. 编码输出
         output_b64 = encode_image_to_base64(output_image)
         
@@ -159,8 +187,10 @@ async def edit_image(request: EditRequest):
             seed=request.seed,
             ssim=ssim_val,
             lpips=lpips_val,
+            latent_mse=latent_mse_val,
             ssim_grad=ssim_grad_b64,
             lpips_grad=lpips_grad_b64,
+            latent_mse_grad=latent_mse_grad_b64,
         )
         
     except Exception as e:
