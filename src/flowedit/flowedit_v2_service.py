@@ -3,28 +3,36 @@
 使用自定义 pipeline_qwenimage_edit_plus_flowedit_v2
 """
 
-import io
 import os
-import base64
 from typing import Optional
 from contextlib import asynccontextmanager
 
 import torch
-from PIL import Image
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-# 使用你的自定义 FlowEdit pipeline
 from pipelines.pipeline_qwenimage_edit_plus_flowedit_v2 import QwenImageEditPlusPipeline
+from pipelines.similarity_gradient import (
+    compute_ssim_gradient,
+    compute_lpips_gradient,
+    create_lpips_model,
+)
+from src.flowedit.utils import (
+    decode_base64_image,
+    encode_image_to_base64,
+    resize_if_needed,
+    encode_tensor_to_base64,
+)
 
 
 # ============ 全局模型实例 ============
 pipe: Optional[QwenImageEditPlusPipeline] = None
+lpips_model = None
 
 
 def load_pipeline(device: str = "cuda"):
-    """加载 Pipeline"""
-    global pipe
+    """加载 Pipeline 和 LPIPS 模型"""
+    global pipe, lpips_model
     if pipe is None:
         pipe = QwenImageEditPlusPipeline.from_pretrained(
             "Qwen/Qwen-Image-Edit-2509",
@@ -33,6 +41,11 @@ def load_pipeline(device: str = "cuda"):
         pipe = pipe.to(device)
         pipe.set_progress_bar_config(disable=None)
         print(f"Pipeline loaded on {device}")
+    
+    if lpips_model is None:
+        lpips_model = create_lpips_model(device)
+        print("LPIPS model loaded")
+    
     return pipe
 
 
@@ -68,41 +81,21 @@ class EditRequest(BaseModel):
     true_cfg_scale_tgt: float = Field(default=15.0, description="Target 分支的 CFG Scale")
     n_min: int = Field(default=0, description="FlowEdit n_min")
     n_max: int = Field(default=25, description="FlowEdit n_max")
+    
+    # 梯度计算（独立控制）
+    compute_ssim_grad: bool = Field(default=False, description="是否计算 SSIM 梯度")
+    compute_lpips_grad: bool = Field(default=False, description="是否计算 LPIPS 梯度")
 
 
 class EditResponse(BaseModel):
     """编辑响应"""
     image: str = Field(..., description="Base64 编码的输出图像")
     seed: int = Field(..., description="使用的随机种子")
-
-
-# ============ 辅助函数 ============
-def decode_base64_image(b64_str: str) -> Image.Image:
-    """Base64 解码为 PIL Image"""
-    image_data = base64.b64decode(b64_str)
-    return Image.open(io.BytesIO(image_data)).convert("RGB")
-
-
-def encode_image_to_base64(image: Image.Image, format: str = "PNG") -> str:
-    """PIL Image 编码为 Base64"""
-    buffer = io.BytesIO()
-    image.save(buffer, format=format)
-    return base64.b64encode(buffer.getvalue()).decode("utf-8")
-
-
-def resize_if_needed(img: Image.Image, target_max: int = 1024) -> Image.Image:
-    """等比缩放后居中贴到正方形画布"""
-    w, h = img.size
-    scale = target_max / max(w, h)
-    new_w = max(1, int(round(w * scale)))
-    new_h = max(1, int(round(h * scale)))
-    resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-    canvas = Image.new("RGB", (target_max, target_max), (255, 255, 255))
-    offset_x = (target_max - new_w) // 2
-    offset_y = (target_max - new_h) // 2
-    canvas.paste(resized, (offset_x, offset_y))
-    return canvas
+    # 梯度相关字段
+    ssim: Optional[float] = Field(default=None, description="SSIM 值")
+    lpips: Optional[float] = Field(default=None, description="LPIPS 值")
+    ssim_grad: Optional[str] = Field(default=None, description="Base64 编码的 SSIM 梯度")
+    lpips_grad: Optional[str] = Field(default=None, description="Base64 编码的 LPIPS 梯度")
 
 
 # ============ API 端点 ============
@@ -144,12 +137,30 @@ async def edit_image(request: EditRequest):
             output = pipe(**inputs)
             output_image = output.images[0]
         
-        # 5. 编码输出
+        # 5. 计算梯度（独立控制）
+        ssim_val, lpips_val, ssim_grad_b64, lpips_grad_b64 = None, None, None, None
+        device = str(next(pipe.transformer.parameters()).device)
+        
+        if request.compute_ssim_grad:
+            ssim_result = compute_ssim_gradient(source_image, output_image, device)
+            ssim_val = ssim_result["ssim"]
+            ssim_grad_b64 = encode_tensor_to_base64(ssim_result["ssim_grad"])
+        
+        if request.compute_lpips_grad:
+            lpips_result = compute_lpips_gradient(source_image, output_image, lpips_model, device)
+            lpips_val = lpips_result["lpips"]
+            lpips_grad_b64 = encode_tensor_to_base64(lpips_result["lpips_grad"])
+        
+        # 6. 编码输出
         output_b64 = encode_image_to_base64(output_image)
         
         return EditResponse(
             image=output_b64,
             seed=request.seed,
+            ssim=ssim_val,
+            lpips=lpips_val,
+            ssim_grad=ssim_grad_b64,
+            lpips_grad=lpips_grad_b64,
         )
         
     except Exception as e:
