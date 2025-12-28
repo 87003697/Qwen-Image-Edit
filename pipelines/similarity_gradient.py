@@ -102,8 +102,8 @@ def compute_latent_mse_gradient(
     """
     # 确保梯度计算启用
     with torch.enable_grad():
-        # 1. 使用 pipeline 的 preprocess 函数处理源图像，转为 float32 保证梯度精度
-        src = preprocess_fn(source_img).to(device).float()  # [1, 3, H, W], 范围 [-1, 1]
+        # 1. 使用 pipeline 的 preprocess 函数处理源图像，dtype/device 由外层控制
+        src = preprocess_fn(source_img).to(device)  # [1, 3, H, W], 范围 [-1, 1]
         _, _, height, width = src.shape
         src = src.unsqueeze(2).requires_grad_(True)  # [1, 3, 1, H, W]
         
@@ -115,7 +115,10 @@ def compute_latent_mse_gradient(
         edited_unpacked = edited_unpacked.to(src_latent.dtype).to(device)  # [1, C, 1, h, w]
         
         # 4. 计算 MSE
-        mse_loss = torch.nn.functional.mse_loss(src_latent, edited_unpacked)
+        mse_loss = torch.nn.functional.mse_loss(
+            src_latent.float(),  # [1, C, 1, h, w] fp32
+            edited_unpacked.float(),  # [1, C, 1, h, w] fp32
+        )
         
         # 5. 求梯度（相对于 source 图像）
         mse_grad = torch.autograd.grad(mse_loss, src)[0].squeeze(0).squeeze(1)  # [3, H, W]

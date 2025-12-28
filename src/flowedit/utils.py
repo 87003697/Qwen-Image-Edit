@@ -41,6 +41,6 @@ def resize_if_needed(img: Image.Image, target_max: int = 1024) -> Image.Image:
 def encode_tensor_to_base64(tensor: torch.Tensor) -> str:
     """Tensor -> Base64 编码的 numpy 字节"""
     buffer = io.BytesIO()
-    np.save(buffer, tensor.detach().cpu().numpy().astype(np.float32))
+    np.save(buffer, tensor.detach().cpu().float().numpy().astype(np.float32))
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 

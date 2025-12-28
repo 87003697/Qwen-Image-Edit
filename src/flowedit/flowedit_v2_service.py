@@ -26,6 +26,11 @@ from src.flowedit.utils import (
     encode_tensor_to_base64,
 )
 
+# ============ dtype / device 配置 ============
+MODEL_DTYPE = torch.bfloat16  # pipeline / VAE
+METRIC_DTYPE = torch.float32  # SSIM / LPIPS
+METRIC_DEVICE = "cuda"        # 同一 GPU
+
 
 # ============ 全局模型实例 ============
 pipe: Optional[QwenImageEditPlusPipeline] = None
@@ -38,14 +43,15 @@ def load_pipeline(device: str = "cuda"):
     if pipe is None:
         pipe = QwenImageEditPlusPipeline.from_pretrained(
             "Qwen/Qwen-Image-Edit-2509",
-            torch_dtype=torch.bfloat16,
+            torch_dtype=MODEL_DTYPE,
         )
         pipe = pipe.to(device)
         pipe.set_progress_bar_config(disable=None)
         print(f"Pipeline loaded on {device}")
     
     if lpips_model is None:
-        lpips_model = create_lpips_model(device)
+        # LPIPS 使用 fp32，放在同一 GPU 上计算相似度/梯度
+        lpips_model = create_lpips_model(METRIC_DEVICE)
         print("LPIPS model loaded")
     
     return pipe
@@ -146,15 +152,21 @@ async def edit_image(request: EditRequest):
         # 5. 计算梯度（独立控制）
         ssim_val, lpips_val, latent_mse_val = None, None, None
         ssim_grad_b64, lpips_grad_b64, latent_mse_grad_b64 = None, None, None
-        device = str(next(pipe.transformer.parameters()).device)
+        device_model = str(next(pipe.transformer.parameters()).device)
+        device_metric = METRIC_DEVICE
+        
+        # 推理结果 latent 与模型 dtype 对齐
+        edited_latent = edited_latent.to(device_model, dtype=MODEL_DTYPE)  # [B, seq_len, C] bf16
         
         if request.compute_ssim_grad:
-            ssim_result = compute_ssim_gradient(source_image, output_image, device)
+            # SSIM 在 GPU 上用 fp32 计算，避免与 bf16 权重混用
+            ssim_result = compute_ssim_gradient(source_image, output_image, device_metric)
             ssim_val = ssim_result["ssim"]
             ssim_grad_b64 = encode_tensor_to_base64(ssim_result["ssim_grad"])
         
         if request.compute_lpips_grad:
-            lpips_result = compute_lpips_gradient(source_image, output_image, lpips_model, device)
+            # LPIPS 同样在 GPU 上用 fp32 计算
+            lpips_result = compute_lpips_gradient(source_image, output_image, lpips_model, device_metric)
             lpips_val = lpips_result["lpips"]
             lpips_grad_b64 = encode_tensor_to_base64(lpips_result["lpips_grad"])
         
@@ -163,7 +175,9 @@ async def edit_image(request: EditRequest):
             def preprocess_fn(img: Image.Image) -> torch.Tensor:
                 """使用 pipeline 的图像预处理"""
                 w, h = img.size
-                return pipe.image_processor.preprocess(img, h, w)  # [1, 3, H, W], 范围 [-1, 1]
+                return pipe.image_processor.preprocess(img, h, w).to(
+                    device_model, dtype=MODEL_DTYPE
+                )  # [1, 3, H, W] bf16, 范围 [-1, 1]
             
             def encode_fn(img_tensor: torch.Tensor) -> torch.Tensor:
                 """使用 pipeline 的 VAE 编码 + 标准化"""
@@ -174,7 +188,7 @@ async def edit_image(request: EditRequest):
                 return pipe._unpack_latents(latent, height, width, pipe.vae_scale_factor)  # [B, C, 1, h, w]
             
             latent_mse_result = compute_latent_mse_gradient(
-                source_image, edited_latent, preprocess_fn, encode_fn, unpack_fn, device
+                source_image, edited_latent, preprocess_fn, encode_fn, unpack_fn, device_model
             )
             latent_mse_val = latent_mse_result["mse"]
             latent_mse_grad_b64 = encode_tensor_to_base64(latent_mse_result["mse_grad"])
@@ -194,6 +208,9 @@ async def edit_image(request: EditRequest):
         )
         
     except Exception as e:
+        import traceback
+        
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"推理失败: {str(e)}")
 
 

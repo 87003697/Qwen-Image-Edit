@@ -29,6 +29,9 @@ def call_edit_api(
     true_cfg_scale_tgt: float = 15.0,
     n_min: int = 0,
     n_max: int = 25,
+    compute_ssim_grad: bool = False,
+    compute_lpips_grad: bool = False,
+    compute_latent_mse_grad: bool = False,
 ) -> str:
     """
     调用 FlowEdit API 进行图像编辑
@@ -74,6 +77,9 @@ def call_edit_api(
             "true_cfg_scale_tgt": true_cfg_scale_tgt,
             "n_min": n_min,
             "n_max": n_max,
+            "compute_ssim_grad": compute_ssim_grad,
+            "compute_lpips_grad": compute_lpips_grad,
+            "compute_latent_mse_grad": compute_latent_mse_grad,
         },
         timeout=300,
     )
@@ -127,6 +133,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n-min", type=int, default=0, help="FlowEdit n_min")
     parser.add_argument("--n-max", type=int, default=25, help="FlowEdit n_max")
     
+    # 梯度/相似度计算开关
+    parser.add_argument("--compute-ssim-grad", action="store_true", help="是否计算 SSIM 梯度")
+    parser.add_argument("--compute-lpips-grad", action="store_true", help="是否计算 LPIPS 梯度")
+    parser.add_argument("--compute-latent-mse-grad", action="store_true", help="是否计算 Latent MSE 梯度")
+    
     return parser
 
 
@@ -166,6 +177,9 @@ def main():
             true_cfg_scale_tgt=args.true_cfg_scale_tgt,
             n_min=args.n_min,
             n_max=args.n_max,
+            compute_ssim_grad=args.compute_ssim_grad,
+            compute_lpips_grad=args.compute_lpips_grad,
+            compute_latent_mse_grad=args.compute_latent_mse_grad,
         )
         print("\n==========================================")
         print(f"输出: {output_path}")
